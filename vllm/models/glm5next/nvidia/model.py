@@ -42,6 +42,7 @@ from vllm.model_executor.layers.mhc import (
     hc_expand,
 )
 from vllm.model_executor.layers.quantization import QuantizationConfig
+from vllm.model_executor.layers.quantization.exl3_layout import exl3_or_none
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     GroupShape,
     scaled_dequantize,
@@ -328,7 +329,9 @@ class Glm5NextDecoderLayer(nn.Module):
                 kv_lora_rank=config.kv_lora_rank,
                 max_position_embeddings=config.max_position_embeddings,
                 cache_config=cache_config,
-                quant_config=None,  # MLA projections are BF16 in checkpoint
+                # MLA projections are BF16 in FP8 checkpoints; EXL3 quants
+                # store them as trellis tensors.
+                quant_config=exl3_or_none(quant_config),
                 prefix=f"{prefix}.self_attn",
                 topk_indices_buffer=topk_indices_buffer,
                 skip_rope=config.mla_nope,
@@ -738,6 +741,7 @@ class Glm5NextModel(nn.Module):
         return hidden_states
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+        weights = _split_fused_kda_weights(weights)
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
             (".gate_up_proj", ".gate_proj", 0),
@@ -1166,6 +1170,52 @@ def get_spec_layer_idx_from_weight_name(
             ) or weight_name.startswith(f"layers.{layer_idx + i}."):
                 return layer_idx + i
     return None
+
+
+# Native ExLlamaV3 quants fuse the KDA q/k/v projection and short convolutions
+# (``qkv_proj``, ``conv1d``); the model keeps them as separate shards.
+_FUSED_KDA_WEIGHTS = {
+    ".self_attn.qkv_proj.": (
+        ".self_attn.q_proj.",
+        ".self_attn.k_proj.",
+        ".self_attn.v_proj.",
+    ),
+    ".self_attn.conv1d.": (
+        ".self_attn.q_conv1d.",
+        ".self_attn.k_conv1d.",
+        ".self_attn.v_conv1d.",
+    ),
+}
+# EXL3 tensors shared by every output block (input transform, codebook marker).
+_EXL3_SHARED_SUFFIXES = ("suh", "mcg", "mul1")
+
+
+def _split_fused_kda_weights(weights: Iterable[tuple]) -> Iterable[tuple]:
+    """Split fused KDA q|k|v tensors into equal thirds along the output dim.
+
+    EXL3 trellis tensors are ``[in/16, out/16, 16*K]`` (output tiles on dim 1)
+    and ``svh`` scales the output; everything else is ``[out, ...]``.
+    """
+    for args in weights:
+        name, tensor = args[0], args[1]
+        for fused, parts in _FUSED_KDA_WEIGHTS.items():
+            if fused not in name:
+                continue
+            suffix = name.rsplit(".", 1)[-1]
+            if suffix in _EXL3_SHARED_SUFFIXES:
+                chunks = (tensor, tensor, tensor)
+            else:
+                dim = 1 if suffix == "trellis" else 0
+                if tensor.shape[dim] % 3:
+                    raise ValueError(
+                        f"{name}: dim {dim} of {tuple(tensor.shape)} is not q|k|v"
+                    )
+                chunks = tensor.chunk(3, dim=dim)
+            for part, chunk in zip(parts, chunks):
+                yield (name.replace(fused, part, 1), chunk, *args[2:])
+            break
+        else:
+            yield args
 
 
 def _try_load_fp8_indexer_wk(

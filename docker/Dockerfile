@@ -704,6 +704,30 @@ RUN --mount=type=cache,target=/opt/uv/cache \
     && ls /workspace/lmcache-dist
 
 #################### DEV IMAGE ####################
+#################### EXLLAMAV3 (EXL3 KERNELS) BUILD IMAGE ####################
+# Kernels for `--quantization exl3` (vllm/model_executor/layers/quantization/
+# exl3.py): LinearEXL3 and the fused exl3_moe routed-expert kernel.
+# ExLlamaV3 >= 1.4.5 is required for mul1 experts (turboderp quants).
+# Only the CUDA archs you serve are compiled (default: RTX 3090, sm_86).
+FROM base AS exllamav3-build
+ARG EXLLAMAV3_REPO=https://github.com/turboderp-org/exllamav3
+ARG EXLLAMAV3_REF=v1.5.3
+ARG exl3_cuda_arch_list='8.6'
+ARG max_jobs=2
+ENV UV_LINK_MODE=copy
+RUN --mount=type=cache,target=/opt/uv/cache \
+    uv pip install --system "setuptools>=77" wheel ninja
+RUN set -eux; \
+    mkdir -p /tmp/exllamav3 /workspace/exl3-dist; \
+    curl -fsSL "${EXLLAMAV3_REPO}/archive/${EXLLAMAV3_REF}.tar.gz" \
+      | tar -xz -C /tmp/exllamav3 --strip-components=1; \
+    cd /tmp/exllamav3; \
+    TORCH_CUDA_ARCH_LIST="${exl3_cuda_arch_list}" MAX_JOBS=${max_jobs} \
+      python3 -m pip wheel --no-deps --no-build-isolation -w /workspace/exl3-dist .; \
+    ls -la /workspace/exl3-dist; \
+    rm -rf /tmp/exllamav3
+#################### EXLLAMAV3 (EXL3 KERNELS) BUILD IMAGE ####################
+
 FROM base AS dev
 
 ARG PIP_INDEX_URL UV_INDEX_URL
@@ -1357,6 +1381,13 @@ RUN chmod +x sagemaker-entrypoint.sh
 ENTRYPOINT ["./sagemaker-entrypoint.sh"]
 
 FROM vllm-openai-base AS vllm-openai
+
+# EXL3 kernels. --no-deps: exllamav3 only needs torch/numpy at runtime here and
+# must not replace the image's torch build.
+RUN --mount=type=cache,target=/opt/uv/cache \
+    --mount=type=bind,from=exllamav3-build,source=/workspace/exl3-dist,target=/tmp/exl3-dist \
+    uv pip install --system --no-deps /tmp/exl3-dist/*.whl \
+    && python3 -c "import torch, exllamav3_ext as e; assert hasattr(e, 'exl3_moe'); print('exllamav3_ext', e.__file__)"
 
 # To run the image as non-root, either build the `vllm-openai-nonroot` target
 # below, or in a derived Dockerfile uncomment the following line and ensure

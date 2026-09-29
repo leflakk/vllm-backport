@@ -1,0 +1,4 @@
+3e72c9088ddcbd71787641df923b3b7851589ab5c0f7c717d9389fd58eb0a7c2  vllm/config/model.py
+c8d3b11386ea66970c0e3e5e16794b21cc3b4b98bc0f45782678ac2b12794250  vllm/model_executor/layers/quantization/__init__.py
+f703b7ce2279375dba4e71c3a966b9685ac87130503a808513da35f4b70221de  vllm/models/glm5next/nvidia/model.py
+99cfc24678c0a99f2c813c20e3dcc30c8bfac4f55ec4299737689d5d51f472cd  vllm/models/glm5next/nvidia/kda.py

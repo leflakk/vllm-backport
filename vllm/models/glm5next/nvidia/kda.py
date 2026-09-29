@@ -28,6 +28,7 @@ from vllm.model_executor.layers.mamba.ops.gather_initial_states import (
     gather_initial_states,
 )
 from vllm.model_executor.layers.mamba.ops.scatter_states import scatter_states
+from vllm.model_executor.layers.quantization.exl3_layout import exl3_or_none
 from vllm.model_executor.model_loader.weight_utils import sharded_weight_loader
 from vllm.model_executor.utils import (
     maybe_disable_graph_partition,
@@ -158,10 +159,11 @@ class Glm5NextLinearAttention(GatedDeltaNetAttention):
         vllm_config: VllmConfig,
         prefix: str = "",
     ) -> None:
-        # KDA projections remain BF16 because fp8 checkpoints omit their scales.
+        # KDA projections remain BF16 because fp8 checkpoints omit their scales
+        # (EXL3 quants do store them quantized).
         saved_quant_config = vllm_config.quant_config
         try:
-            vllm_config.quant_config = None
+            vllm_config.quant_config = exl3_or_none(saved_quant_config)
             super().__init__(config, vllm_config, prefix)
         finally:
             vllm_config.quant_config = saved_quant_config

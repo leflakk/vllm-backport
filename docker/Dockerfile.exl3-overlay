@@ -1,0 +1,65 @@
+# EXL3 overlay on the prebuilt vllm-backport image (quick path).
+#
+# The EXL3 support of this branch is Python-only, so instead of rebuilding
+# vLLM (hours) this image takes the published sm86 image, compiles only the
+# ExLlamaV3 kernels for sm_86 and copies the changed Python files in.
+#
+#   docker build -f docker/Dockerfile.exl3-overlay -t vllm-backport:exl3-sm86 .
+#
+# The build fails if the base image's copies of the replaced files differ from
+# vllm-backport 29e66dad (exl3-overlay-base.sha256): a newer base needs this
+# branch rebased first. For a from-source build use docker/Dockerfile
+# (target vllm-openai, --build-arg torch_cuda_arch_list='8.6').
+
+# latest-sm86 as of 2026-09-26 (vllm-backport master 29e66dad).
+ARG BASE_IMAGE=lazymio/vllm-backport:latest-sm86@sha256:2627d2a97e7f539b99ac98f511c589f5f520d3fc5630b195aca7f6ef865ead4e
+
+FROM ${BASE_IMAGE} AS exllamav3-build
+ARG EXLLAMAV3_REPO=https://github.com/turboderp-org/exllamav3
+ARG EXLLAMAV3_REF=v1.5.3
+ARG exl3_cuda_arch_list='8.6'
+ARG max_jobs=8
+ARG CUDA_VERSION_DASH=13-0
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends --allow-change-held-packages \
+        build-essential curl \
+        cuda-cudart-dev-${CUDA_VERSION_DASH} \
+        libcublas-dev-${CUDA_VERSION_DASH} \
+        libcusparse-dev-${CUDA_VERSION_DASH} \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    python3 -m pip install --no-cache-dir "setuptools>=77" wheel ninja; \
+    mkdir -p /tmp/exllamav3 /workspace/exl3-dist; \
+    curl -fsSL "${EXLLAMAV3_REPO}/archive/${EXLLAMAV3_REF}.tar.gz" \
+      | tar -xz -C /tmp/exllamav3 --strip-components=1; \
+    site=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"); \
+    export CPATH="${site}/nvidia/cu13/include${CPATH:+:$CPATH}"; \
+    cd /tmp/exllamav3; \
+    TORCH_CUDA_ARCH_LIST="${exl3_cuda_arch_list}" MAX_JOBS=${max_jobs} \
+      python3 -m pip wheel --no-deps --no-build-isolation -w /workspace/exl3-dist .; \
+    ls -la /workspace/exl3-dist
+
+FROM ${BASE_IMAGE} AS vllm-openai
+RUN --mount=type=bind,from=exllamav3-build,source=/workspace/exl3-dist,target=/tmp/exl3-dist \
+    uv pip install --system --no-deps /tmp/exl3-dist/*.whl \
+    && python3 -c "import torch, exllamav3_ext as e; assert hasattr(e, 'exl3_moe'); print('exllamav3_ext', e.__file__)"
+
+COPY docker/exl3-overlay-base.sha256 /tmp/exl3-overlay-base.sha256
+RUN cd "$(python3 -c 'import os, vllm; print(os.path.dirname(os.path.dirname(vllm.__file__)))')" \
+    && sha256sum -c /tmp/exl3-overlay-base.sha256 \
+    || (echo "base image does not match vllm-backport 29e66dad; rebase the exl3 branch" && exit 1)
+
+COPY vllm/config/model.py /tmp/exl3-overlay/vllm/config/model.py
+COPY vllm/model_executor/layers/quantization/__init__.py /tmp/exl3-overlay/vllm/model_executor/layers/quantization/__init__.py
+COPY vllm/model_executor/layers/quantization/exl3.py /tmp/exl3-overlay/vllm/model_executor/layers/quantization/exl3.py
+COPY vllm/model_executor/layers/quantization/exl3_layout.py /tmp/exl3-overlay/vllm/model_executor/layers/quantization/exl3_layout.py
+COPY vllm/models/glm5next/nvidia/model.py /tmp/exl3-overlay/vllm/models/glm5next/nvidia/model.py
+COPY vllm/models/glm5next/nvidia/kda.py /tmp/exl3-overlay/vllm/models/glm5next/nvidia/kda.py
+COPY benchmarks/exl3/bench_decode.py /opt/exl3/bench_decode.py
+COPY tests/quantization/test_exl3.py tests/quantization/test_exl3_gpu.py /opt/exl3/tests/
+RUN site="$(python3 -c 'import os, vllm; print(os.path.dirname(os.path.dirname(vllm.__file__)))')" \
+    && cp -r /tmp/exl3-overlay/vllm/. "${site}/vllm/" \
+    && rm -rf /tmp/exl3-overlay \
+    && python3 -c "from vllm.model_executor.layers.quantization import get_quantization_config as g; print(g('exl3'))"
+
+ENTRYPOINT ["vllm", "serve"]

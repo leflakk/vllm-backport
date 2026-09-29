@@ -14,6 +14,7 @@ logger = init_logger(__name__)
 
 QuantizationMethods = Literal[
     "awq",
+    "exl3",
     "auto_awq",
     "fp8",
     "fbgemm_fp8",
@@ -135,6 +136,7 @@ def get_quantization_config(quantization: str) -> type[QuantizationConfig]:
     from .compressed_tensors.compressed_tensors import (
         CompressedTensorsConfig,
     )
+    from .exl3 import Exl3Config
     from .experts_int8 import ExpertsInt8Config
     from .fbgemm_fp8 import FBGEMMFp8Config
     from .fp8 import Fp8Config
@@ -154,6 +156,7 @@ def get_quantization_config(quantization: str) -> type[QuantizationConfig]:
 
     method_to_config: dict[str, type[QuantizationConfig]] = {
         "awq": AutoAWQConfig,
+        "exl3": Exl3Config,
         "awq_marlin": AutoAWQConfig,
         "auto_awq": AutoAWQConfig,
         "fp8": Fp8Config,

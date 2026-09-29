@@ -10,6 +10,7 @@ Status:
 | `Qwen3.8-27B` | BF16, AWQ W4A16 | Fully Supported (v0.8.0+) |
 | `Qwen3.8-Flash-Next` | FP8, [AWQ W4A16](https://huggingface.co/wtdcode/Qwen3.8-Flash-Next-AWQ-W4A16) | Fully Supported (v0.9.0+) |
 | `GLM-5.3-Flash` | FP8, [AWQ W4A16](https://huggingface.co/wtdcode/GLM-5.3-Flash-AWQ-W4A16) | Fully Supported (v0.11.2+) |
+| `GLM-5.3-Flash` | [EXL3](docs/features/quantization/exl3.md) ([turboderp 4.05bpw](https://huggingface.co/turboderp/GLM-5.3-Flash-exl3/tree/4.05bpw)), text only | Experimental (`exl3-sm86` branch) |
 | `DeepSeek-V4-Flash-Vision-Exp` | Native FP4 | Fully Supported (v0.13.0+) |
 | `DeepSeek-V4.1-Flash` | Native FP4 with Engram | Fully Supported (v0.13.0+) |
 
