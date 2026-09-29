@@ -16,7 +16,7 @@ as [turboderp/GLM-5.3-Flash-exl3](https://huggingface.co/turboderp/GLM-5.3-Flash
 | --- | --- | --- |
 | Routed experts | EXL3 K4, mul1 codebook | fused `exl3_moe` (LinearEXL3 loop with `EXL3_FUSED_MOE=0`) |
 | Shared experts, dense MLP, MLA `q_a/kv_a/q_b/o`, indexer `wq_b`, KDA `qkv`/`o` | EXL3 K5/K6, mul1 | LinearEXL3 custom op |
-| `lm_head` | EXL3 K6 | dequantized to BF16 at load when the TP shard is not 128-aligned (TP=8) |
+| `lm_head` | EXL3 K6 | LinearEXL3; at TP=8 (shard not 128-aligned) each rank runs the covering 128-aligned window and crops |
 | KDA `b/f/g` projections, `kv_b_proj`, norms, embeddings | FP16/BF16 | native vLLM |
 
 The per-module bitrate/codebook is read from the checkpoint's
@@ -30,7 +30,7 @@ The per-module bitrate/codebook is read from the checkpoint's
 - Per-layer uniform expert bitrate. Checkpoints that mix K3/K4 across the
   experts of a layer (e.g. `satgeze/...-TR3-3.5bpw`) are rejected at load.
 - Every TP shard of an EXL3 matrix must be 128-aligned (Hadamard blocks):
-  TP 1/2/4/8 work for GLM-5.3-Flash; the `lm_head` falls back to BF16 at TP=8.
+  TP 1/2/4/8 work for GLM-5.3-Flash (the TP=8 `lm_head` computes 96 extra rows).
 - turboderp's quants ship **no MTP layer**: serve without speculative decoding.
 - The vision tower is EXL3 too and is not supported yet: use
   `--language-model-only`.
@@ -73,9 +73,11 @@ docker run --gpus all --ipc=host -p 8000:8000 \
     --tool-call-parser glm47 --enable-auto-tool-choice --reasoning-parser glm45
 ```
 
-The weights take about 19 GiB per GPU at TP=8, which leaves roughly 4 GiB per
-3090 for KV cache, activations and CUDA graphs. Once this works, drop
-`--enforce-eager`, then raise `--max-model-len`.
+Memory is tight with the 4.05bpw quant at TP=8: about 21 GiB per GPU is
+allocated once the weights are loaded, leaving ~2 GiB per 3090 for KV cache,
+activations and CUDA graphs. Raise `--gpu-memory-utilization` (0.97) and keep
+the context short, or use the 3.05bpw branch (~116 GiB) for headroom. Once
+this works, drop `--enforce-eager`, then raise `--max-model-len`.
 
 Load logs to look for: `EXL3 layout: 203 dense EXL3 modules, 42 routed-expert
 layers`, `EXL3 mul1 trellis engaged for routed experts: K=4/4/4 ...

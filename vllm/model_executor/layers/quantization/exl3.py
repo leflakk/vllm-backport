@@ -2757,9 +2757,12 @@ class Exl3LinearMethod(LinearMethodBase):
         # EXL3 applies its Hadamard transforms in 128-wide blocks on both the
         # input and the output side, so a TP shard must start and end on a
         # 128 boundary. When it does not (the GLM-5.3 lm_head at TP=8:
-        # 154880 / 8 = 19360 rows), load the full tensor, dequantize it once
-        # and keep this rank's rows as a plain weight.
+        # 154880 / 8 = 19360 rows), load the smallest 128-aligned window of
+        # output rows that covers this rank's shard, run it as EXL3 and crop
+        # the output (19456 rows computed, 19360 kept).
         self.dequant_tp: tuple[int, int] | None = None
+        self.out_window: tuple[int, int] | None = None
+        self.out_crop = 0
         if self.tp_size > 1:
             if self.is_row_parallel:
                 misaligned = self.in_per_partition % 128 != 0
@@ -2777,7 +2780,13 @@ class Exl3LinearMethod(LinearMethodBase):
                     )
                 self.dequant_tp = (self.tp_rank, self.tp_size)
                 self.shard_out = self.output_sizes[0]
-                self.output_sizes = [self.shard_out * self.tp_size]
+                full_out = self.shard_out * self.tp_size
+                lo = self.tp_rank * self.shard_out
+                w_lo = lo // 128 * 128
+                w_hi = min(-(-(lo + self.shard_out) // 128) * 128, full_out)
+                self.out_window = (w_lo, w_hi)
+                self.out_crop = lo - w_lo
+                self.output_sizes = [w_hi - w_lo]
                 self.tp_rank, self.tp_size = 0, 1
         # [dense-exl3] The ParallelLMHead is the only non-LinearBase layer
         # this method serves: vLLM shards it as one contiguous block of the
@@ -2787,10 +2796,10 @@ class Exl3LinearMethod(LinearMethodBase):
         # at TP2); refuse an actually-padded vocab rather than guess at
         # pad-row encodings.
         self.is_vocab_head = not isinstance(layer, LinearBase)
-        if self.dequant_tp is not None and self.output_sizes[0] != output_size:
+        if self.dequant_tp is not None and self.shard_out * self.dequant_tp[1] != output_size:
             raise ValueError(
-                f"EXL3 {self.prefix}: cannot dequantize a padded/uneven TP "
-                f"shard ({self.output_sizes[0]} != {output_size})"
+                f"EXL3 {self.prefix}: cannot window a padded/uneven TP "
+                f"shard ({self.shard_out} x {self.dequant_tp[1]} != {output_size})"
             )
         if self.is_vocab_head and output_size != int(
             getattr(layer, "org_vocab_size", -1)
@@ -2921,7 +2930,13 @@ class Exl3LinearMethod(LinearMethodBase):
                 f"{suffix} tensor arrived for it"
             )
 
-        loaded = loaded_weight.detach().contiguous()
+        loaded = loaded_weight.detach()
+        if self.out_window is not None and suffix in ("trellis", "svh"):
+            w_lo, w_hi = self.out_window
+            dim = 1 if suffix == "trellis" else 0
+            div = 16 if suffix == "trellis" else 1
+            loaded = loaded.narrow(dim, w_lo // div, (w_hi - w_lo) // div)
+        loaded = loaded.contiguous()
         if self.is_row_parallel:
             sharded = shard_exl3_row(loaded, suffix, eff_rank, eff_tp)
         else:
@@ -3031,28 +3046,14 @@ class Exl3LinearMethod(LinearMethodBase):
                 )
             )
 
-        if self.dequant_tp is not None:
-            rank, _ = self.dequant_tp
-            full = linears[0].get_weight_tensor()  # [in, out_full] fp16
-            rows = full[:, rank * self.shard_out : (rank + 1) * self.shard_out]
-            weight = rows.t().contiguous().to(self.params_dtype)
-            del full, rows, linears
-            for name in ("trellis", "suh", "svh", "mcg", "mul1", "weight"):
-                delattr(layer, name)
-            layer.weight = Parameter(weight, requires_grad=False)
-            layer._exl3_dequant = True
+        if self.out_window is not None:
+            layer._exl3_out_crop = (self.out_crop, self.shard_out)
             logger.info(
-                "[dense-exl3] %s dequantized to %s at load (K=%d, TP shard "
-                "%d/%d not 128-aligned, %d x %d)",
-                self.prefix, self.params_dtype, self.bits, rank,
-                self.dequant_tp[1], *weight.shape,
+                "[dense-exl3] %s: TP shard %d/%d is not 128-aligned; running "
+                "EXL3 rows [%d, %d) and keeping %d",
+                self.prefix, self.dequant_tp[0], self.dequant_tp[1],
+                *self.out_window, self.shard_out,
             )
-            _DENSE_EXL3_LAYERS.append(
-                {"linears": [], "bf16_shards": [], "output_sizes": [self.shard_out],
-                 "bf16_weight": None}
-            )
-            _dense_exl3_maybe_summarize()
-            return
 
         bf16_weight = layer.weight.data if bf16_shards else None
         self._retain_bf16_large_m(layer, linears, bf16_weight)
@@ -3160,8 +3161,11 @@ class Exl3LinearMethod(LinearMethodBase):
         )
 
     def apply(self, layer, x: torch.Tensor, bias: torch.Tensor | None = None):
-        if getattr(layer, "_exl3_dequant", False):
-            return F.linear(x, layer.weight, bias)
+        crop = getattr(layer, "_exl3_out_crop", None)
+        if crop is not None:
+            y = torch.ops.vllm.dense_exl3_forward(x, layer._exl3_dense_handle)
+            y = y[..., crop[0] : crop[0] + crop[1]].contiguous()
+            return y if bias is None else y + bias
         handle = getattr(layer, "_exl3_dense_handle", None)
         if handle is None:
             raise RuntimeError("EXL3 linear layers were not built after weight load")

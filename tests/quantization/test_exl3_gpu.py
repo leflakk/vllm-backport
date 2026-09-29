@@ -213,12 +213,20 @@ def test_o_proj_row_parallel_tp8(exl3, ckpt):
     assert _rel_err(y, y_full) < 1e-2
 
 
-def test_lm_head_dequant_slice_matches_forward(exl3, ckpt):
-    lin = _linear(exl3, ckpt("lm_head"))
+@pytest.mark.parametrize("rank", [0, 3, 7])
+def test_lm_head_aligned_window_tp8(exl3, ckpt, rank):
+    """TP=8 lm_head shards (19360 rows) are not 128-aligned: each rank runs
+    the covering 128-aligned window as EXL3 and crops, like Exl3LinearMethod."""
+    parts = ckpt("lm_head")
+    lin = _linear(exl3, parts)
     x = torch.randn(2, lin.in_features, device="cuda", dtype=torch.float16)
     y_full = lin.forward(x, {}, out_dtype=torch.float32)
     rows = lin.out_features // TP
-    r = 3
-    w = lin.get_weight_tensor()[:, r * rows : (r + 1) * rows].t().to(torch.bfloat16)
-    y = F.linear(x.to(torch.bfloat16), w).float()
-    assert _rel_err(y, y_full[:, r * rows : (r + 1) * rows]) < 1e-2
+    lo = rank * rows
+    w_lo, w_hi = lo // 128 * 128, min(-(-(lo + rows) // 128) * 128, lin.out_features)
+    window = dict(parts)
+    window["trellis"] = parts["trellis"][:, w_lo // 16 : w_hi // 16].contiguous()
+    window["svh"] = parts["svh"][w_lo:w_hi].contiguous()
+    y = _linear(exl3, window).forward(x, {}, out_dtype=torch.float32)
+    y = y[:, lo - w_lo : lo - w_lo + rows]
+    assert _rel_err(y, y_full[:, lo : lo + rows]) < 1e-2
