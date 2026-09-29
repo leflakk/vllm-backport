@@ -66,8 +66,8 @@ docker run --gpus all --ipc=host -p 8000:8000 \
     /models/GLM-5.3-Flash-exl3-4.05bpw \
     --served-model-name GLM-5.3-Flash-EXL3 \
     --tensor-parallel-size 8 \
-    --max-model-len 32768 \
-    --kv-cache-dtype fp8 \
+    --max-model-len 16384 \
+    --gpu-memory-utilization 0.97 \
     --language-model-only \
     --enforce-eager \
     --tool-call-parser glm47 --enable-auto-tool-choice --reasoning-parser glm45
@@ -78,6 +78,10 @@ allocated once the weights are loaded, leaving ~2 GiB per 3090 for KV cache,
 activations and CUDA graphs. Raise `--gpu-memory-utilization` (0.97) and keep
 the context short, or use the 3.05bpw branch (~116 GiB) for headroom. Once
 this works, drop `--enforce-eager`, then raise `--max-model-len`.
+
+Do not pass `--kv-cache-dtype fp8`: the Ampere sparse-MLA backend
+(`TRITON_MLA_SPARSE`) only accepts `auto`, `float16` or `bfloat16`, and no
+attention backend is selected with fp8.
 
 Load logs to look for: `EXL3 layout: 203 dense EXL3 modules, 42 routed-expert
 layers`, `EXL3 mul1 trellis engaged for routed experts: K=4/4/4 ...
