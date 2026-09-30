@@ -130,6 +130,12 @@ class FusedMoEMethodBase(QuantizeMethodBase):
         return False
 
     @property
+    def supports_shared_experts_stream(self) -> bool:
+        """Whether shared experts may run on the aux stream concurrently with
+        this method's routed-expert kernels."""
+        return True
+
+    @property
     def method_name(self) -> str:
         return self.__class__.__name__
 

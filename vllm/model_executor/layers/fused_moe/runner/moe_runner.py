@@ -293,7 +293,8 @@ class MoERunner(MoERunnerInterface):
                 is not None
             )
             is_multistream_safe = lambda: (
-                not current_platform.is_rocm() or routed_input_is_quantized()
+                (not current_platform.is_rocm() or routed_input_is_quantized())
+                and self.routed_experts.quant_method.supports_shared_experts_stream
             )
             self._shared_experts = SharedExperts(
                 shared_experts,

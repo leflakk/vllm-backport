@@ -147,3 +147,15 @@ def test_exl3_is_registered_and_detected():
     cfg = Exl3Config.from_config(hf_cfg)
     assert cfg.bits is None and cfg.codebook == "mul1"
     assert Exl3Config.from_config({"quant_method": "exl3", "bits": 4}).bits == 4
+
+
+def test_exl3_moe_never_overlaps_shared_experts():
+    """exl3_moe spin barriers share ExLlamaV3's lock buffer with the dense EXL3
+    GEMMs of the shared experts: running both on two streams deadlocks."""
+    from vllm.model_executor.layers.fused_moe.fused_moe_method_base import (
+        FusedMoEMethodBase,
+    )
+    from vllm.model_executor.layers.quantization.exl3 import Exl3MoEMethod
+
+    assert FusedMoEMethodBase.supports_shared_experts_stream.fget(None) is True
+    assert Exl3MoEMethod.supports_shared_experts_stream.fget(None) is False

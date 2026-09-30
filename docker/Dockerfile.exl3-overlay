@@ -55,6 +55,8 @@ COPY vllm/model_executor/layers/quantization/exl3.py /tmp/exl3-overlay/vllm/mode
 COPY vllm/model_executor/layers/quantization/exl3_layout.py /tmp/exl3-overlay/vllm/model_executor/layers/quantization/exl3_layout.py
 COPY vllm/models/glm5next/nvidia/model.py /tmp/exl3-overlay/vllm/models/glm5next/nvidia/model.py
 COPY vllm/models/glm5next/nvidia/kda.py /tmp/exl3-overlay/vllm/models/glm5next/nvidia/kda.py
+COPY vllm/model_executor/layers/fused_moe/fused_moe_method_base.py /tmp/exl3-overlay/vllm/model_executor/layers/fused_moe/fused_moe_method_base.py
+COPY vllm/model_executor/layers/fused_moe/runner/moe_runner.py /tmp/exl3-overlay/vllm/model_executor/layers/fused_moe/runner/moe_runner.py
 COPY benchmarks/exl3/bench_decode.py /opt/exl3/bench_decode.py
 COPY tests/quantization/test_exl3.py tests/quantization/test_exl3_gpu.py /opt/exl3/tests/
 RUN site="$(python3 -c 'import os, vllm; print(os.path.dirname(os.path.dirname(vllm.__file__)))')" \

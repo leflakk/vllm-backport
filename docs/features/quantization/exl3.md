@@ -35,6 +35,11 @@ The per-module bitrate/codebook is read from the checkpoint's
 - The vision tower is EXL3 too and is not supported yet: use
   `--language-model-only`.
 
+- Shared experts never run on vLLM's aux CUDA stream with EXL3: `exl3_moe`
+  syncs through spin barriers in ExLlamaV3's per-device lock buffer, which the
+  dense EXL3 GEMMs also use, and overlapping the two hangs the GPU at 100% SM.
+  On images older than this fix, set `VLLM_DISABLE_SHARED_EXPERTS_STREAM=1`.
+
 ## Build (RTX 3090, sm_86)
 
 Quick path, on top of the published `lazymio/vllm-backport:latest-sm86` image

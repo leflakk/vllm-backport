@@ -3210,6 +3210,14 @@ class Exl3MoEMethod(FusedMoEMethodBase):
     def get_fused_moe_quant_config(self, layer: "RoutedExperts") -> FusedMoEQuantConfig | None:
         return None
 
+    @property
+    def supports_shared_experts_stream(self) -> bool:
+        # exl3_moe syncs its CTA groups with spin barriers kept in ExLlamaV3's
+        # per-device `locks` buffer, which the dense EXL3 GEMMs of the shared
+        # experts also use. Overlapping them on the aux stream corrupts the
+        # barriers (or starves co-residency) and the kernel spins forever.
+        return False
+
     def create_weights(
         self,
         layer: "RoutedExperts",
